@@ -16,14 +16,25 @@ This document lists verified gaps found in the original Excalidraw codebase and 
 
 ---
 
-## 2. Two Key Improvements We Will Build
+## 2. What We Will Build: One Fix, One New Feature
 
-### Improvement 1: Atomic Multiplayer Conflict Resolution with Version Nonce Handshakes
-- **What was wrong in the original:** When two clients join an existing room simultaneously or reconnect after offline editing, their local IndexedDB elements race against remote Firestore snapshots without an atomic handshake gate, risking temporary element clobbering.
-- **Our solution:** Implement a strict **two-phase synchronization protocol** in the collaboration gateway. When connecting to `#room=...`, the client requests the authoritative version vector and pauses local reconciliation broadcasts until the initial room state is acknowledged and merged.
-- **Why it matters to our target user:** Engineers and architects collaborating during live design sprints will never lose strokes or experience snapping jitter when multiple teammates open a meeting link at the exact same second.
+### Fix: Lock Down the Open Firebase Security Rules (Gap #1)
+- **What was wrong in the original:** `firestore.rules:5` grants `allow get, write: if true;` on every document. In Firestore, `write` covers create, update **and delete**, so anyone holding a room ID can overwrite or wipe that room's scene, and there is no payload size limit. `storage.rules:4-9` leave `/rooms` and `/shareLinks` just as open.
+- **Our solution:** Replace the wildcard rule with per-collection rules:
+  - Split `write` into `create` and `update`; `delete` and `list` are denied to clients.
+  - Schema check: a scene document may only contain `sceneVersion`, `iv` and `ciphertext`.
+  - Size cap: `ciphertext` must be under 2 MB; Storage uploads are create-only and size-capped.
+  - No rollbacks: an update must not lower `sceneVersion`.
+  - End-to-end encryption is unchanged; the server still only ever sees ciphertext.
+- **Why it matters to our target user:** A shared room link can no longer be used to silently destroy or vandalise a team's diagram, and the backend can't be abused as free unbounded blob storage.
 
-### Improvement 2: Automated Local Emergency Backup on Storage Quota Exhaustion
-- **What was wrong in the original:** If a canvas contains large embedded images and exceeds the browser's IndexedDB / LocalStorage quota, the app sets `localStorageQuotaExceededAtom` but leaves the unsynced changes in memory without an automated backup prompt.
-- **Our solution:** Add an **active storage supervisor** that monitors quota headroom. If a storage write fails, the UI instantly triggers an automated offline `.excalidraw` JSON file download and renders an alert offering to offload large images to cloud storage.
-- **Why it matters to our target user:** Prevents catastrophic data loss for complex visual diagrams and long brainstorming sessions even on low-memory mobile devices or restricted browser profiles.
+### New Feature: Burn-After-Read Sketches
+- **What it is:** End-to-end encrypted share links that self-destruct after N views or a time limit (1 view, 5 views, 1 hour, 24 hours), chosen at export time.
+- **How it works:**
+  1. The scene is deflated and AES-GCM encrypted in the browser using the existing share-link pipeline; the key lives only in the URL fragment (`#burn=id,key`).
+  2. The ciphertext is stored with `viewsLeft` and `expiresAt` in a collection clients cannot read or write directly (`allow read, write: if false`).
+  3. Opening the link calls a Cloud Function that runs a Firestore transaction: check expiry, decrement `viewsLeft`, return the ciphertext, and delete the document when the count reaches zero. A Firestore TTL policy removes expired links.
+  4. The recipient decrypts locally and the scene opens in view-only mode (`viewModeEnabled`). Late visitors see "This sketch has burned."
+- **Why it depends on the fix:** With the locked-down rules, the Cloud Function is the only way to reach a burn link, so nobody can read the ciphertext directly or reset the view counter.
+- **Why it matters to our target user:** Disappearing chat exists; disappearing diagrams that the server can't read don't. Teams can share incident post-mortems, interview whiteboards and sensitive architecture knowing the server copy is gone afterwards.
+- **Limitation:** It cannot prevent screenshots or copies made by a viewer; the guarantee is server-side deletion.
