@@ -23,7 +23,7 @@ This document lists verified gaps found in the original Excalidraw codebase and 
 - **Our solution:** Replace the wildcard rule with per-collection rules:
   - Split `write` into `create` and `update`; `delete` and `list` are denied to clients.
   - Schema check: a scene document may only contain `sceneVersion`, `iv` and `ciphertext`.
-  - Size cap: `ciphertext` must be under 2 MB; Storage uploads are create-only and size-capped.
+  - Size cap: `ciphertext` must be under 2 MB or possibily set by User; Storage uploads are create-only and size-capped.
   - No rollbacks: an update must not lower `sceneVersion`.
   - End-to-end encryption is unchanged; the server still only ever sees ciphertext.
 - **Why it matters to our target user:** A shared room link can no longer be used to silently destroy or vandalise a team's diagram, and the backend can't be abused as free unbounded blob storage.
