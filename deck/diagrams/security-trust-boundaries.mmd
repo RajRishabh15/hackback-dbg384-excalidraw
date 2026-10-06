@@ -1,0 +1,32 @@
+graph TB
+    subgraph UntrustedZone ["Untrusted Zone (Public Web)"]
+        Attacker["Malicious Client / Script"]
+        LegitUser["Legitimate Collaborator"]
+    end
+
+    subgraph Boundary1 ["Trust Boundary 1: Perimeter & WAF"]
+        WAF["WAF Rate Limiter & TLS 1.3 Termination"]
+    end
+
+    subgraph Boundary2 ["Trust Boundary 2: Gateway & Auth"]
+        JWTAuth["JWT Authentication Guard"]
+        SchemaVal["Schema Validator (TypeBox)"]
+        WSTicket["WebSocket Single-Use Ticket Verifier"]
+    end
+
+    subgraph Boundary3 ["Trust Boundary 3: Business Logic & RBAC"]
+        BoardRBAC["Board RBAC Guard (Owner / Editor / Viewer)"]
+        DOMPurify["SVG DOMPurify & URL Protocol Whitelist"]
+        CRDTGuard["Yjs Operation Range & Geometry Clamper"]
+    end
+
+    subgraph Boundary4 ["Trust Boundary 4: Data Layer Isolation"]
+        PG_RLS["PostgreSQL Row-Level Security (Tenant Isolation)"]
+        S3IAM["S3 IAM Policies & Presigned URL Validation"]
+    end
+
+    Attacker --> Boundary1
+    LegitUser --> Boundary1
+    Boundary1 --> Boundary2
+    Boundary2 --> Boundary3
+    Boundary3 --> Boundary4

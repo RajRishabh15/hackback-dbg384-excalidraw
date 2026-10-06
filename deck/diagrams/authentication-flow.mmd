@@ -1,0 +1,23 @@
+sequenceDiagram
+    autonumber
+    actor User as User Browser
+    participant API as Fastify API Gateway
+    participant DB as PostgreSQL 16
+    participant WS as Hocuspocus WS Gateway
+
+    User->>API: POST /api/v1/auth/login (email, password)
+    API->>DB: Query user by email
+    DB-->>API: Return user record + Argon2id hash
+    API->>API: Verify password in constant time
+    API-->>User: Set-Cookie: __Host-refresh_token (HttpOnly, Secure)<br/>Body: { accessToken: "JWT..." }
+
+    Note over User,WS: Realtime Session Ticket Handshake
+    User->>API: POST /api/v1/boards/:id/live-ticket (Bearer JWT)
+    API->>DB: Check workspace & board membership (RBAC)
+    DB-->>API: User is EDITOR
+    API-->>User: Return single-use Ticket (HMAC-SHA256, TTL 60s)
+
+    User->>WS: Connect: wss://realtime.../boards/:id?ticket=xyz
+    WS->>WS: Verify Ticket signature & boardId match
+    WS-->>User: HTTP 101 Switching Protocols
+    Note over User,WS: WebSocket Session Authenticated as EDITOR

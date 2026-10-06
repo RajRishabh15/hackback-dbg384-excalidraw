@@ -1,0 +1,80 @@
+erDiagram
+    WORKSPACES ||--o{ BOARDS : contains
+    WORKSPACES ||--o{ WORKSPACE_MEMBERS : employs
+    USERS ||--o{ WORKSPACE_MEMBERS : belongs_to
+    USERS ||--o{ BOARDS : owns
+    USERS ||--o{ BOARD_MEMBERS : assigned_to
+    BOARDS ||--o{ BOARD_MEMBERS : manages
+    BOARDS ||--o{ BOARD_SNAPSHOTS : snapshots
+    BOARDS ||--o{ BOARD_UPDATES : records
+    BOARDS ||--o{ BOARD_COMMENTS : annotates
+    BOARDS ||--o{ BOARD_ASSETS : attaches
+
+    WORKSPACES {
+        UUID id PK
+        VARCHAR name
+        VARCHAR slug UK
+        ENUM tier
+        TIMESTAMPTZ created_at
+    }
+
+    USERS {
+        UUID id PK
+        VARCHAR email UK
+        VARCHAR password_hash
+        VARCHAR name
+        TEXT avatar_url
+        BOOLEAN is_active
+    }
+
+    BOARDS {
+        UUID id PK
+        UUID workspace_id FK
+        UUID owner_id FK
+        VARCHAR title
+        BOOLEAN is_public
+        BOOLEAN is_locked
+        INT version
+    }
+
+    BOARD_MEMBERS {
+        UUID id PK
+        UUID board_id FK
+        UUID user_id FK
+        ENUM role
+    }
+
+    BOARD_SNAPSHOTS {
+        UUID id PK
+        UUID board_id FK
+        INT version
+        BYTEA crdt_binary
+        INT element_count
+        JSONB elements_json
+    }
+
+    BOARD_UPDATES {
+        BIGSERIAL id PK
+        UUID board_id FK
+        BYTEA update_data
+        TIMESTAMPTZ created_at
+    }
+
+    BOARD_COMMENTS {
+        UUID id PK
+        UUID board_id FK
+        UUID author_id FK
+        NUMERIC x
+        NUMERIC y
+        TEXT text
+        BOOLEAN resolved
+    }
+
+    BOARD_ASSETS {
+        UUID id PK
+        UUID board_id FK
+        UUID uploaded_by FK
+        VARCHAR s3_key
+        VARCHAR mime_type
+        BIGINT file_size_bytes
+    }

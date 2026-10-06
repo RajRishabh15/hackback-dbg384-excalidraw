@@ -1,0 +1,46 @@
+graph TB
+    subgraph PublicInternet ["Public Internet"]
+        Browsers["Collaborator Browsers & Mobile Clients"]
+    end
+
+    subgraph EdgeCDN ["Edge CDN & Security (Cloudflare)"]
+        Edge["Cloudflare Edge Anycast<br/>- DDoS Protection<br/>- TLS 1.3 Termination<br/>- Static Asset Caching"]
+    end
+
+    subgraph CloudVPC ["AWS / Kubernetes Cloud VPC"]
+        subgraph IngressTier ["Ingress Tier"]
+            ALB["AWS Application Load Balancer / Traefik Ingress"]
+        end
+
+        subgraph ServiceMesh ["Container Pods (K8s Namespace: prod)"]
+            APIPods["Fastify API Pods (3 Replicas)<br/>- Auth, Workspaces, Boards CRUD"]
+            WSPods["Hocuspocus WS Pods (4 Replicas)<br/>- In-memory Y.Docs, Room Sockets"]
+            WorkerPods["BullMQ Worker Pods (2 Replicas)<br/>- Asset resizing, PDF exports, Compaction"]
+        end
+
+        subgraph DataTier ["Managed Data Persistence"]
+            PostgresMaster[("AWS RDS PostgreSQL 16 (Primary)")]
+            PostgresReplica[("AWS RDS PostgreSQL 16 (Read Replica)")]
+            RedisCluster[("AWS ElastiCache Redis 7 Cluster<br/>(3 Shards, Multi-AZ)")]
+            S3Storage[("AWS S3 Multi-AZ Bucket<br/>(Assets, Snapshots, Backups)")]
+        end
+    end
+
+    Browsers --> Edge
+    Edge --> ALB
+    ALB -- "/api/*" --> APIPods
+    ALB -- "/realtime/*" --> WSPods
+
+    APIPods --> PostgresMaster
+    APIPods --> PostgresReplica
+    APIPods --> RedisCluster
+    APIPods --> S3Storage
+
+    WSPods --> RedisCluster
+    WSPods --> PostgresMaster
+
+    WorkerPods --> RedisCluster
+    WorkerPods --> S3Storage
+    WorkerPods --> PostgresMaster
+
+    PostgresMaster -. "Streaming Replication" .-> PostgresReplica

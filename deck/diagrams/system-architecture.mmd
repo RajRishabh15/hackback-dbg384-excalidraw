@@ -1,0 +1,47 @@
+graph TB
+    subgraph ClientBrowser ["Client Browser Environment"]
+        UI["React 19 UI & Controls"]
+        MultiCanvas["Multi-Layer Canvas 2D Engine<br/>(Static, Interaction, Presence)"]
+        QuadTree["2D Spatial Quadtree Index"]
+        YDoc["Yjs CRDT Document Store<br/>(Y.Map, Y.Array)"]
+        IndexedDB["IndexedDB Local Cache"]
+        
+        UI --> MultiCanvas
+        MultiCanvas --> QuadTree
+        UI --> YDoc
+        YDoc <--> IndexedDB
+    end
+
+    subgraph EdgePerimeter ["Edge & Ingress (Cloudflare / ALB)"]
+        WAF["WAF & DDoS Shield"]
+        Proxy["Reverse Proxy / TLS 1.3 Termination"]
+        WAF --> Proxy
+    end
+
+    subgraph BackendCluster ["Backend Microservices / Modular Monolith"]
+        FastifyAPI["Fastify REST API Gateway<br/>(Node.js 22 LTS)"]
+        Hocuspocus["Hocuspocus WebSocket Cluster<br/>(Yjs Sync Engine)"]
+        Workers["BullMQ Background Workers<br/>(Image Resizing, Export, Compaction)"]
+        
+        FastifyAPI --> Workers
+    end
+
+    subgraph DataStorage ["Data & Persistence Layer"]
+        Postgres[("PostgreSQL 16 Primary<br/>(ACID, JSONB, RLS)")]
+        Redis[("Redis 7 Cluster<br/>(Pub/Sub Relay, Awareness, Rate Limit)")]
+        S3[("S3-Compatible Object Store<br/>(Images, Assets, Exports)")]
+    end
+
+    ClientBrowser -- "HTTPS / REST" --> WAF
+    ClientBrowser -- "WSS / Binary Yjs" --> WAF
+    Proxy -- "/api/*" --> FastifyAPI
+    Proxy -- "/realtime/*" --> Hocuspocus
+
+    FastifyAPI --> Postgres
+    FastifyAPI --> Redis
+    FastifyAPI --> S3
+
+    Hocuspocus --> Redis
+    Hocuspocus --> Postgres
+    Workers --> S3
+    Workers --> Postgres

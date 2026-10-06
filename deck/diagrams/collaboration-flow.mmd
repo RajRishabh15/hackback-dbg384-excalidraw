@@ -1,0 +1,28 @@
+sequenceDiagram
+    autonumber
+    actor Alice as Client A (Editor)
+    participant WSServer as WebSocket Gateway (Hocuspocus)
+    participant Redis as Redis Pub/Sub Cluster
+    actor Bob as Client B (Editor)
+    participant Postgres as PostgreSQL Database
+
+    Alice->>WSServer: WSS Connect with Ticket (JWT)
+    WSServer->>WSServer: Verify Ticket & RBAC Permissions
+    Alice->>WSServer: SyncStep 1 (Client State Vector)
+    WSServer-->>Alice: SyncStep 2 (Missing Updates Delta)
+    WSServer-->>Alice: Awareness Initial Peers
+
+    Bob->>WSServer: Active in same board room
+    Alice->>Alice: User draws shape (Local Y.Doc transact)
+    Alice->>WSServer: Binary Update Frame (0x02)
+    WSServer->>Redis: Publish update to channel "board:123"
+    Redis->>WSServer: Fan-out update
+    WSServer-->>Bob: Broadcast Binary Update Frame (0x02)
+    Bob->>Bob: Apply delta to local Y.Doc & redraw canvas
+
+    Alice->>WSServer: Cursor moved (Awareness Frame 0x03)
+    WSServer-->>Bob: Broadcast ephemeral cursor (0x03)
+    Bob->>Bob: Update Alice's live cursor dot
+
+    Note over WSServer,Postgres: Debounced Snapshot Persistence (every 2s / 100 ops)
+    WSServer->>Postgres: Write compressed Yjs snapshot to board_snapshots

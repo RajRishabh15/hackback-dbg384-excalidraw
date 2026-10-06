@@ -1,0 +1,19 @@
+flowchart TD
+    Start([Client Connects to Board]) --> ReadLocal[Read Local Y.Doc from IndexedDB Cache]
+    ReadLocal --> GenLocalSV[Generate Local State Vector: localSV]
+    GenLocalSV --> SendSync1[Send SyncStep 1 frame to Server]
+    
+    SendSync1 --> ServerReceive{Server Ingests localSV}
+    ServerReceive --> ServerDiff[Compute missing updates:<br/>diff = encodeStateAsUpdate ServerDoc, localSV]
+    ServerDiff --> SendSync2[Send SyncStep 2 frame to Client]
+    
+    SendSync2 --> ClientApply[Client calls Y.applyUpdate yDoc, diff]
+    ClientApply --> CheckOfflineEdits{Client has unpushed offline edits?}
+    
+    CheckOfflineEdits -- Yes --> GenClientDiff[Compute client offline delta:<br/>clientDiff = encodeStateAsUpdate yDoc, serverSV]
+    GenClientDiff --> SendClientUpdate[Send SyncUpdate frame to Server]
+    SendClientUpdate --> ServerApply[Server calls Y.applyUpdate ServerDoc, clientDiff]
+    ServerApply --> ServerBroadcast[Server broadcasts update to other room peers]
+    
+    CheckOfflineEdits -- No --> Synced([Fully Converged & Synchronized])
+    ServerBroadcast --> Synced
