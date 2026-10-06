@@ -21,6 +21,13 @@ export interface Point {
   y: number;
 }
 
+export type ConnectionPointId = 'top' | 'right' | 'bottom' | 'left' | 'center';
+
+export interface PointBinding {
+  elementId: string;
+  pointId: ConnectionPointId;
+}
+
 export interface CanvasElement {
   id: string;
   type: ElementType;
@@ -45,6 +52,8 @@ export interface CanvasElement {
   groupIds: string[];
   version: number;
   versionNonce: number;
+  startBinding?: PointBinding | null;
+  endBinding?: PointBinding | null;
 }
 
 export interface Viewport {

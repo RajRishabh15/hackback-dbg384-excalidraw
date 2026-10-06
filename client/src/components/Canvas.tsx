@@ -9,8 +9,9 @@ import {
   hitTestHandle,
   getHandleCursor,
   getElementBounds,
+  findNearestConnectionPoint,
 } from '../engine';
-import type { CanvasElement, Point, HandlePosition, ToolType } from '../types';
+import type { CanvasElement, Point, HandlePosition, ToolType, PointBinding } from '../types';
 
 function createElement(
   type: CanvasElement['type'],
@@ -59,6 +60,7 @@ export default function Canvas() {
   const actionRef = useRef<ActionState>({ type: 'idle' });
   const textInputRef = useRef<HTMLTextAreaElement>(null);
   const [editingText, setEditingText] = useState<{ id: string; x: number; y: number } | null>(null);
+  const [snapPoint, setSnapPoint] = useState<Point | null>(null);
   const rafRef = useRef<number>(0);
 
   const store = useCanvasStore;
@@ -74,10 +76,10 @@ export default function Canvas() {
       state.selectedElementIds,
       state.viewport,
       state.collaborators,
+      snapPoint,
     );
-  }, [store]);
+  }, [store, snapPoint]);
 
-  // Set up render loop
   useEffect(() => {
     let running = true;
     const loop = () => {
@@ -92,7 +94,6 @@ export default function Canvas() {
     };
   }, [render]);
 
-  // Resize handler
   useEffect(() => {
     const handleResize = () => {
       const canvas = canvasRef.current;
@@ -114,7 +115,6 @@ export default function Canvas() {
     return screenToCanvas(e.clientX - rect.left, e.clientY - rect.top, viewport);
   }, [store]);
 
-  // Mouse handlers
   const handlePointerDown = useCallback((e: React.PointerEvent) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -125,18 +125,7 @@ export default function Canvas() {
     const pos = getCanvasCoords(e);
 
     // Middle mouse button = pan
-    if (e.button === 1) {
-      actionRef.current = {
-        type: 'panning',
-        startX: e.clientX,
-        startY: e.clientY,
-        startScrollX: viewport.scrollX,
-        startScrollY: viewport.scrollY,
-      };
-      return;
-    }
-
-    if (activeTool === 'pan') {
+    if (e.button === 1 || activeTool === 'pan') {
       actionRef.current = {
         type: 'panning',
         startX: e.clientX,
@@ -148,9 +137,9 @@ export default function Canvas() {
     }
 
     if (activeTool === 'select') {
-      // Check if clicking on a resize handle of selected element
+      // Check handles
       for (const id of state.selectedElementIds) {
-        const el = state.elements.find((el: CanvasElement) => el.id === id);
+        const el = state.elements.find((item: CanvasElement) => item.id === id);
         if (el) {
           const handle = hitTestHandle(pos.x, pos.y, el, viewport.zoom);
           if (handle) {
@@ -170,12 +159,11 @@ export default function Canvas() {
       }
 
       // Hit test elements
-      const nonDeleted = state.elements.filter((el: CanvasElement) => !el.isDeleted);
+      const nonDeleted = state.elements.filter((item: CanvasElement) => !item.isDeleted);
       const hit = hitTestElements(pos.x, pos.y, nonDeleted);
       if (hit) {
         const isAlreadySelected = state.selectedElementIds.includes(hit.id);
         if (e.shiftKey) {
-          // Toggle selection
           if (isAlreadySelected) {
             store.getState().setSelectedElementIds(state.selectedElementIds.filter((id: string) => id !== hit.id));
           } else {
@@ -210,7 +198,7 @@ export default function Canvas() {
     }
 
     if (activeTool === 'eraser') {
-      const nonDeleted = state.elements.filter((el: CanvasElement) => !el.isDeleted);
+      const nonDeleted = state.elements.filter((item: CanvasElement) => !item.isDeleted);
       const hit = hitTestElements(pos.x, pos.y, nonDeleted);
       if (hit) {
         store.getState().deleteElements([hit.id]);
@@ -227,19 +215,36 @@ export default function Canvas() {
       return;
     }
 
-    // Drawing shapes
+    // Drawing shapes or connectors
+    let startX = pos.x;
+    let startY = pos.y;
+    let startBinding: PointBinding | null = null;
+
+    if (activeTool === 'line' || activeTool === 'arrow') {
+      const snap = findNearestConnectionPoint(pos.x, pos.y, state.elements);
+      if (snap) {
+        startX = snap.x;
+        startY = snap.y;
+        startBinding = { elementId: snap.elementId, pointId: snap.pointId };
+      }
+    }
+
     const element = createElement(
       activeTool as CanvasElement['type'],
-      pos.x,
-      pos.y,
+      startX,
+      startY,
       state.currentStyle,
     );
+
+    if (startBinding) {
+      element.startBinding = startBinding;
+    }
 
     actionRef.current = {
       type: 'drawing',
       element,
-      startX: pos.x,
-      startY: pos.y,
+      startX,
+      startY,
     };
   }, [store, getCanvasCoords]);
 
@@ -251,7 +256,6 @@ export default function Canvas() {
     // Update cursor based on hover
     const canvas = canvasRef.current;
     if (canvas && action.type === 'idle' && state.activeTool === 'select') {
-      // Check handles first
       for (const id of state.selectedElementIds) {
         const el = state.elements.find((item: CanvasElement) => item.id === id);
         if (el) {
@@ -270,13 +274,29 @@ export default function Canvas() {
     switch (action.type) {
       case 'drawing': {
         const { element, startX, startY } = action;
+
         if (element.type === 'freedraw') {
           const newPoint = { x: pos.x - element.x, y: pos.y - element.y };
           element.points = [...(element.points || []), newPoint];
         } else if (element.type === 'line' || element.type === 'arrow') {
-          element.points = [{ x: 0, y: 0 }, { x: pos.x - startX, y: pos.y - startY }];
-          element.width = Math.abs(pos.x - startX);
-          element.height = Math.abs(pos.y - startY);
+          // Check magnetic snap for end point
+          const snap = findNearestConnectionPoint(pos.x, pos.y, state.elements, element.id);
+          let endX = pos.x;
+          let endY = pos.y;
+
+          if (snap) {
+            endX = snap.x;
+            endY = snap.y;
+            element.endBinding = { elementId: snap.elementId, pointId: snap.pointId };
+            setSnapPoint({ x: snap.x, y: snap.y });
+          } else {
+            element.endBinding = null;
+            setSnapPoint(null);
+          }
+
+          element.points = [{ x: 0, y: 0 }, { x: endX - startX, y: endY - startY }];
+          element.width = Math.abs(endX - startX);
+          element.height = Math.abs(endY - startY);
         } else {
           const x = Math.min(startX, pos.x);
           const y = Math.min(startY, pos.y);
@@ -287,12 +307,11 @@ export default function Canvas() {
           element.width = w;
           element.height = h;
         }
-        // Temp render the element
+
         const existingIndex = state.elements.findIndex((item: CanvasElement) => item.id === element.id);
         if (existingIndex >= 0) {
           store.getState().updateElement(element.id, { ...element });
         } else {
-          // Add temporarily
           store.getState().setElements([...state.elements, element]);
         }
         break;
@@ -326,9 +345,8 @@ export default function Canvas() {
         if (handle.includes('n')) { newY = origBounds.y + dy; newH = origBounds.height - dy; }
         if (handle.includes('s')) { newH = origBounds.height + dy; }
 
-        // Ensure minimum size
-        if (newW < 5) { newW = 5; }
-        if (newH < 5) { newH = 5; }
+        if (newW < 5) newW = 5;
+        if (newH < 5) newH = 5;
 
         store.getState().updateElement(action.elementId, {
           x: newX, y: newY, width: newW, height: newH,
@@ -347,7 +365,6 @@ export default function Canvas() {
       }
 
       case 'selecting': {
-        // Box selection
         const x1 = Math.min(action.startX, pos.x);
         const y1 = Math.min(action.startY, pos.y);
         const x2 = Math.max(action.startX, pos.x);
@@ -380,11 +397,9 @@ export default function Canvas() {
 
     if (action.type === 'drawing') {
       const el = action.element;
-      // Only add if it has meaningful size
       if (el.type === 'freedraw') {
         if (el.points && el.points.length > 2) {
           state.pushHistory();
-          // Element is already in the array from move handler
         }
       } else if (el.type === 'line' || el.type === 'arrow') {
         if (el.points && el.points.length >= 2) {
@@ -397,23 +412,22 @@ export default function Canvas() {
         if (el.width > 2 && el.height > 2) {
           state.pushHistory();
         } else {
-          // Remove too-small element
           store.getState().setElements(state.elements.filter((item: CanvasElement) => item.id !== el.id));
         }
       }
     }
 
+    setSnapPoint(null);
     actionRef.current = { type: 'idle' };
   }, [store]);
 
-  // Wheel zoom
+  // Wheel zoom and pan
   const handleWheel = useCallback((e: React.WheelEvent) => {
     e.preventDefault();
     const state = store.getState();
     const { viewport } = state;
 
     if (e.ctrlKey || e.metaKey) {
-      // Zoom
       const zoomFactor = e.deltaY < 0 ? 1.1 : 0.9;
       const newZoom = Math.min(Math.max(viewport.zoom * zoomFactor, 0.1), 5);
       const canvas = canvasRef.current;
@@ -431,7 +445,6 @@ export default function Canvas() {
         scrollY: newScrollY,
       });
     } else {
-      // Pan
       store.getState().setViewport({
         scrollX: viewport.scrollX - e.deltaX / viewport.zoom,
         scrollY: viewport.scrollY - e.deltaY / viewport.zoom,
@@ -439,10 +452,9 @@ export default function Canvas() {
     }
   }, [store]);
 
-  // Keyboard shortcuts
+  // Keyboard shortcuts & Clipboard & Grouping
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Don't intercept if typing in input
       if (
         document.activeElement?.tagName === 'INPUT' ||
         document.activeElement?.tagName === 'TEXTAREA'
@@ -452,13 +464,11 @@ export default function Canvas() {
 
       const state = store.getState();
 
+      // Undo / Redo
       if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
         e.preventDefault();
-        if (e.shiftKey) {
-          state.redo();
-        } else {
-          state.undo();
-        }
+        if (e.shiftKey) state.redo();
+        else state.undo();
         return;
       }
 
@@ -468,15 +478,46 @@ export default function Canvas() {
         return;
       }
 
-      if ((e.ctrlKey || e.metaKey) && e.key === 'a') {
+      // Copy (Ctrl+C)
+      if ((e.ctrlKey || e.metaKey) && e.key === 'c') {
         e.preventDefault();
-        const nonDeletedIds = state.elements
-          .filter((item: CanvasElement) => !item.isDeleted)
-          .map((item: CanvasElement) => item.id);
-        state.setSelectedElementIds(nonDeletedIds);
+        state.copySelected();
         return;
       }
 
+      // Paste (Ctrl+V)
+      if ((e.ctrlKey || e.metaKey) && e.key === 'v') {
+        e.preventDefault();
+        state.pasteClipboard();
+        return;
+      }
+
+      // Duplicate (Ctrl+D)
+      if ((e.ctrlKey || e.metaKey) && e.key === 'd') {
+        e.preventDefault();
+        state.duplicateElements(state.selectedElementIds);
+        return;
+      }
+
+      // Group / Ungroup (Ctrl+G / Ctrl+Shift+G)
+      if ((e.ctrlKey || e.metaKey) && e.key === 'g') {
+        e.preventDefault();
+        if (e.shiftKey) {
+          state.ungroupSelected();
+        } else {
+          state.groupSelected();
+        }
+        return;
+      }
+
+      // Select All (Ctrl+A)
+      if ((e.ctrlKey || e.metaKey) && e.key === 'a') {
+        e.preventDefault();
+        state.selectAll();
+        return;
+      }
+
+      // Delete
       if (e.key === 'Delete' || e.key === 'Backspace') {
         if (state.selectedElementIds.length > 0) {
           e.preventDefault();
@@ -520,13 +561,11 @@ export default function Canvas() {
     }
   }, [store, getCanvasCoords]);
 
-  // Handle text editing completion
   const handleTextBlur = useCallback(() => {
     if (editingText && textInputRef.current) {
       const text = textInputRef.current.value;
       if (text.trim()) {
         store.getState().updateElement(editingText.id, { text });
-        // Measure text to set proper width/height
         const canvas = canvasRef.current;
         if (canvas) {
           const ctx = canvas.getContext('2d');

@@ -2,6 +2,7 @@
 import { create } from 'zustand';
 import { nanoid } from 'nanoid';
 import type { CanvasElement, ToolType, Viewport, StyleOptions, Collaborator, Board, User } from './types';
+import { updateConnectedConnectors } from './engine';
 
 /* ── Canvas Store ── */
 interface HistoryEntry {
@@ -30,6 +31,8 @@ interface CanvasState {
   isCollaborating: boolean;
   // Flags
   isRemoteUpdate: boolean;
+  // Clipboard
+  clipboard: CanvasElement[];
 
   // Actions
   addElement: (element: CanvasElement) => void;
@@ -50,6 +53,10 @@ interface CanvasState {
   setIsCollaborating: (v: boolean) => void;
   clearCanvas: () => void;
   duplicateElements: (ids: string[]) => void;
+  groupSelected: () => void;
+  ungroupSelected: () => void;
+  copySelected: () => void;
+  pasteClipboard: () => void;
   selectAll: () => void;
   getNonDeletedElements: () => CanvasElement[];
 }
@@ -80,6 +87,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
   collaborators: new Map(),
   isCollaborating: false,
   isRemoteUpdate: false,
+  clipboard: [],
 
   addElement: (element) => {
     const state = get();
@@ -88,27 +96,31 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
   },
 
   updateElement: (id, updates) => {
-    set((state) => ({
-      elements: state.elements.map((el) =>
+    set((state) => {
+      const updated = state.elements.map((el) =>
         el.id === id
           ? { ...el, ...updates, version: el.version + 1, versionNonce: Math.floor(Math.random() * 2147483647) }
           : el
-      ),
-    }));
+      );
+      const withConnectors = updateConnectedConnectors([id], updated);
+      return { elements: withConnectors };
+    });
   },
 
   updateElements: (updates) => {
     set((state) => {
       const updateMap = new Map(updates.map((u) => [u.id, u.changes]));
-      return {
-        elements: state.elements.map((el) => {
-          const changes = updateMap.get(el.id);
-          if (changes) {
-            return { ...el, ...changes, version: el.version + 1, versionNonce: Math.floor(Math.random() * 2147483647) };
-          }
-          return el;
-        }),
-      };
+      const movedIds: string[] = [];
+      const updated = state.elements.map((el) => {
+        const changes = updateMap.get(el.id);
+        if (changes) {
+          movedIds.push(el.id);
+          return { ...el, ...changes, version: el.version + 1, versionNonce: Math.floor(Math.random() * 2147483647) };
+        }
+        return el;
+      });
+      const withConnectors = updateConnectedConnectors(movedIds, updated);
+      return { elements: withConnectors };
     });
   },
 
@@ -124,7 +136,26 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
     });
   },
 
-  setSelectedElementIds: (ids) => set({ selectedElementIds: ids }),
+  setSelectedElementIds: (ids) => {
+    // If selecting an element that belongs to a group, select the whole group
+    const state = get();
+    if (ids.length === 0) {
+      set({ selectedElementIds: [] });
+      return;
+    }
+    const allSelectedIds = new Set<string>(ids);
+    state.elements.forEach((el) => {
+      if (el.groupIds && el.groupIds.length > 0) {
+        for (const selectedId of ids) {
+          const selectedEl = state.elements.find((e) => e.id === selectedId);
+          if (selectedEl?.groupIds?.some((g) => el.groupIds.includes(g))) {
+            allSelectedIds.add(el.id);
+          }
+        }
+      }
+    });
+    set({ selectedElementIds: Array.from(allSelectedIds) });
+  },
 
   setActiveTool: (tool) => set({ activeTool: tool, selectedElementIds: [] }),
 
@@ -140,7 +171,6 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
 
   setElementsFromRemote: (elements) => {
     set({ elements, isRemoteUpdate: true });
-    // Reset flag async
     setTimeout(() => set({ isRemoteUpdate: false }), 0);
   },
 
@@ -190,16 +220,20 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
 
   duplicateElements: (ids) => {
     const state = get();
+    if (ids.length === 0) return;
     state.pushHistory();
     const idSet = new Set(ids);
     const newElements: CanvasElement[] = [];
     const newIds: string[] = [];
+    const idMap = new Map<string, string>();
+
     state.elements.forEach((el) => {
       if (idSet.has(el.id) && !el.isDeleted) {
         const newId = nanoid();
+        idMap.set(el.id, newId);
         newIds.push(newId);
         newElements.push({
-          ...el,
+          ...JSON.parse(JSON.stringify(el)),
           id: newId,
           x: el.x + 20,
           y: el.y + 20,
@@ -208,9 +242,115 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
         });
       }
     });
+
+    // Remap bindings inside duplicated set if applicable
+    newElements.forEach((el) => {
+      if (el.startBinding && idMap.has(el.startBinding.elementId)) {
+        el.startBinding = { ...el.startBinding, elementId: idMap.get(el.startBinding.elementId)! };
+      }
+      if (el.endBinding && idMap.has(el.endBinding.elementId)) {
+        el.endBinding = { ...el.endBinding, elementId: idMap.get(el.endBinding.elementId)! };
+      }
+    });
+
     set({
       elements: [...state.elements, ...newElements],
       selectedElementIds: newIds,
+    });
+  },
+
+  groupSelected: () => {
+    const state = get();
+    const selectedIds = state.selectedElementIds;
+    if (selectedIds.length < 2) return;
+    state.pushHistory();
+    const newGroupId = nanoid();
+    const idSet = new Set(selectedIds);
+
+    set({
+      elements: state.elements.map((el) => {
+        if (idSet.has(el.id)) {
+          return {
+            ...el,
+            groupIds: [...(el.groupIds || []), newGroupId],
+            version: el.version + 1,
+          };
+        }
+        return el;
+      }),
+    });
+  },
+
+  ungroupSelected: () => {
+    const state = get();
+    const selectedIds = state.selectedElementIds;
+    if (selectedIds.length === 0) return;
+    state.pushHistory();
+    const idSet = new Set(selectedIds);
+
+    set({
+      elements: state.elements.map((el) => {
+        if (idSet.has(el.id) && el.groupIds && el.groupIds.length > 0) {
+          const nextGroups = [...el.groupIds];
+          nextGroups.pop();
+          return {
+            ...el,
+            groupIds: nextGroups,
+            version: el.version + 1,
+          };
+        }
+        return el;
+      }),
+    });
+  },
+
+  copySelected: () => {
+    const state = get();
+    const selected = state.elements.filter(
+      (el) => state.selectedElementIds.includes(el.id) && !el.isDeleted
+    );
+    if (selected.length > 0) {
+      set({ clipboard: JSON.parse(JSON.stringify(selected)) });
+    }
+  },
+
+  pasteClipboard: () => {
+    const state = get();
+    const clipboard = state.clipboard;
+    if (clipboard.length === 0) return;
+    state.pushHistory();
+
+    const newElements: CanvasElement[] = [];
+    const newIds: string[] = [];
+    const idMap = new Map<string, string>();
+
+    clipboard.forEach((el) => {
+      const newId = nanoid();
+      idMap.set(el.id, newId);
+      newIds.push(newId);
+      newElements.push({
+        ...JSON.parse(JSON.stringify(el)),
+        id: newId,
+        x: el.x + 24,
+        y: el.y + 24,
+        version: 1,
+        versionNonce: Math.floor(Math.random() * 2147483647),
+      });
+    });
+
+    newElements.forEach((el) => {
+      if (el.startBinding && idMap.has(el.startBinding.elementId)) {
+        el.startBinding = { ...el.startBinding, elementId: idMap.get(el.startBinding.elementId)! };
+      }
+      if (el.endBinding && idMap.has(el.endBinding.elementId)) {
+        el.endBinding = { ...el.endBinding, elementId: idMap.get(el.endBinding.elementId)! };
+      }
+    });
+
+    set({
+      elements: [...state.elements, ...newElements],
+      selectedElementIds: newIds,
+      clipboard: JSON.parse(JSON.stringify(newElements)), // Advance clipboard offset on subsequent pastes
     });
   },
 
